@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+  <head>
+  <title>User Distribution</title>
+  <script src="http://code.jquery.com/jquery-1.9.1.js"></script>
+  <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAC5jKlDUW2nZlgrecGSxiFF3JZXdjVEHs&callback=initMap">
+    </script>
+    <style>
+      #map {
+        width: 100%;
+        height: 600px;
+        background-color: grey;
+      }
+    </style>
+  </head>
+  <body>
+  <form id="datafile" method="post" enctype="multipart/form-data">
+    
+		<input name="userdata" type="file" />
+		<button id="uploadButton">Submit</button>
+	</form>
+    <h3>My Google Maps Demo</h3>
+    <div id="map"></div>
+	<script>
+	$("#uploadButton").on("click", function(e){
+	   e.preventDefault();
+	   var form = document.getElementById("datafile");
+	   var data =  new FormData(form);
+	   $.ajax({
+	      url: "/upload",
+		  method: "POST",
+		  data: data,
+		  processData: false,
+		  contentType: false,
+		  beforeSend: function( xhr ) {
+			alert("Uploading the data..");
+		  }
+	   }).done(function(data){
+			alert(data);
+	     console.log("file uploaded");
+		 loadData();
+	   }).fail(function(jqXHR, textstatus, error){
+	        console.log(error);
+	   })
+	});
+	
+	//var data = {countries: [],states: { count:0 data:[]}, cities:{ count:0 data:[]}, zipcodes: { count:0 data:[]}};
+	//
+	
+	var levelOptions = [{ level:"country"} , 
+					{ level:"state"}, 
+					{level:"city"},
+					{ level:"zipcode"}];
+	var level = levelOptions[0].level;
+	var markers = [];
+	function loadData(){
+		map = new google.maps.Map(document.getElementById('map'), {
+		  zoom: 4,
+		  center: {lat: 30.32002138, lng: 76.82000321}
+		});
+		console.log("loaded geocoder");
+		geocoder = new google.maps.Geocoder();
+		getData(level,function(err, mongoData){
+			if(err){
+				console.log(err);
+				return;
+			}
+			geocode(mongoData);
+		});
+		map.addListener('zoom_changed', function() {
+				deleteMarkers();
+				var zoom = map.getZoom();
+				var x = zoom;
+				switch (true) {
+					case (x < 5):
+						level = levelOptions[0].level;
+						break;
+					case (x > 4 && x < 7):
+						level = levelOptions[1].level;
+						break;
+					case (x > 6 && x < 9):
+						level = levelOptions[2].level;
+						break;
+					case (x > 8):
+						level = levelOptions[3].level;
+						break;
+					default:
+						level = levelOptions[0].level;
+						break;
+				}
+				getData(level,function(err, mongoData){
+					if(err){
+						console.log(err);
+						return;
+					}
+					geocode(mongoData,level);
+				});
+				console.log(zoom);
+		});
+		var geocode = function (mongoData,level){
+			geocodeAddress(geocoder, mongoData,level, function(err, geocodedData){
+				if(err){
+					console.log(err);
+					return;
+				}
+			    drawMarker(geocodedData)
+			});
+		}
+		var drawMarker = function (geocodedData){
+			geocodedData.forEach(function(user_data){
+			    if(user_data.geolocation){
+					var title = user_data._id.level +"("+user_data.count+")";
+					if(level === "zipcode"){
+						title = user_data._id.city +", ZipCode: "+  title;
+					}
+					var marker = new google.maps.Marker({
+					  position: user_data.geolocation,
+					  map: map,
+					  title: title
+					});
+				  
+				 
+				  marker.addListener('click', function() {
+					new google.maps.InfoWindow({
+						content: '<div id="content">'+title+'</div>'
+					}).open(map, marker);
+				  })
+				  markers.push(marker);
+				}else{
+				    console.log("not set")
+					console.log(user_data);  
+				}
+				
+			});
+		 }
+	}
+	 function initMap() {
+		loadData();
+     }
+	 
+	 
+	function getData(level,callback){
+		console.log("getting data")
+		$.ajax({
+			url: "/fetchData?level="+level,
+			type: 'GET',
+		}).done(function(data){
+		
+			data = JSON.parse(data);
+			callback(null,data)
+			
+		}).fail(function(xhjqr, textstatus, error){
+			console.log(xhjqr);
+			console.log(textstatus);
+			console.log(error);
+			callback(textstatus);
+		});
+	}
+	
+	function geocodeAddress(geocoder, data, level, callback) {
+		var center = "";
+		var flag = true;
+		var coords = [];
+		var BreakException = {};
+		data.forEach(function(user_data, index, data){
+			var address = user_data._id.country;
+			if(level === "zipcode" || level === "state"){
+				address = user_data._id.level +"," + address;
+			}else if(level === "city"){
+				address = user_data._id.level +"," + user_data._id.state  +"," + address;
+			}
+			findGeoLocation(address, function(err, geolocation){
+				if(!err){
+					user_data.geolocation = geolocation;
+					if(index >= data.length - 1){
+						callback(null, data);
+					}
+				}else{
+					geocoder.geocode({'address': address}, function(results, status) {
+					if (status === 'OK') {
+						var document = {address: address, geolocation: results[0].geometry.location};
+						addGeoLocation(document);
+						user_data.geolocation = results[0].geometry.location;
+						if(index >= data.length - 1){
+						callback(null, data);
+						}
+					  } else {
+						console.log('Geocode was not successful for the following reason: ' + status);
+						callback(null, data);
+					  }
+					}); 
+				}
+					
+			});
+			
+		})		
+		
+     }
+	 function addGeoLocation(document){
+		$.ajax({
+			url: "/addgeolocation",
+			type: 'POST',
+			data: JSON.stringify(document),
+			contentType: "application/json",
+			processData: false
+		}).done(function(data){
+			console.log(data);
+		}).fail(function(xhjqr, textstatus, error){
+			console.log(xhjqr);
+			console.log(textstatus);
+			console.log(error);
+		});
+	 }
+	 function findGeoLocation(address,cb){
+		$.ajax({
+				url: "/geolocation?address="+address,
+				type: 'GET',
+			}).done(function(data){
+				data = JSON.parse(data);
+				cb(null,data.geolocation)
+			}).fail(function(xhjqr, textstatus, error){
+				console.log(xhjqr);
+				console.log(textstatus);
+				console.log(error);
+				cb(textstatus);   
+			});
+	 }
+	  function sleep(ms){
+		return new Promise(resolve => setTimeout(resolve,ms));
+	  }
+	  
+	 function deleteMarkers() {
+        clearMarkers();
+        markers = [];
+		console.log("markers removed");
+      }
+	  
+	 function clearMarkers() {
+        setMapOnAll(null);
+      }
+	// Sets the map on all markers in the array.
+      function setMapOnAll(map) {
+        for (var i = 0; i < markers.length; i++) {
+          markers[i].setMap(map);
+        }
+      }
+    </script>
+	
+    
+  </body>
+</html>
